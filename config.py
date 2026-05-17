@@ -5,7 +5,6 @@
 # BASE_URL = ""  # Change to your provider
 # MODEL = ""  # Change to your model
 
-# MiMo 限免
 API_KEY = ""
 BASE_URL = ""  # Change to your provider
 MODEL = ""  # Change to your model

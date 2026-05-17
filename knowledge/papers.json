@@ -1,0 +1,78 @@
+[
+  {
+    "arxiv_id": "1704.04110",
+    "title": "DeepAR: Probabilistic Forecasting with Autoregressive Recurrent Networks",
+    "authors": "David Salinas, Valentin Flunkert, Jan Gasthaus",
+    "year": 2019,
+    "category": "RNN-based, Probabilistic Forecasting",
+    "innovation": "Autoregressive RNN with negative binomial likelihood for count data and scale handling for power-law distributed time series",
+    "datasets": [
+      "parts",
+      "electricity",
+      "traffic",
+      "ec",
+      "ec-sub"
+    ],
+    "metrics": {
+      "ec_0.5-risk": 0.85,
+      "ec_0.9-risk": 0.91,
+      "ec-sub_0.5-risk": 0.77,
+      "electricity_ND": 0.07
+    },
+    "has_code": true,
+    "repo_url": "https://github.com/awslabs/gluon-ts"
+  },
+  {
+    "arxiv_id": "1912.09363",
+    "title": "Temporal Fusion Transformers for Interpretable Multi-horizon Time Series Forecasting",
+    "authors": "Bryan Lim, Sercan Ö. Arık, Nicolas Loeff, Tomas Pfister",
+    "year": 2020,
+    "category": "Transformer-based, Interpretable Forecasting",
+    "innovation": "Attention-based architecture with static covariate encoders, variable selection networks, and interpretable multi-head attention for multi-horizon forecasting",
+    "datasets": [
+      "Electricity",
+      "Traffic",
+      "Retail",
+      "Volatility"
+    ],
+    "metrics": {
+      "Electricity_P50": 0.055,
+      "Traffic_P50": 0.095,
+      "Retail_P50": 0.354
+    },
+    "has_code": true,
+    "repo_url": "https://github.com/google-research/google-research/tree/master/tft"
+  },
+  {
+    "arxiv_id": "1905.12417",
+    "title": "Deep Factors for Forecasting",
+    "authors": "Yuyang Wang, Alex Smola, Danielle C. Maddix, Jan Gasthaus, Dean Foster, Tim Januschowski",
+    "year": 2019,
+    "category": "Global-Local Hybrid, Probabilistic Forecasting",
+    "innovation": "Hybrid model combining global deep factors (RNNs) with local probabilistic models (LDS/GP) for scalable and uncertainty-aware forecasting",
+    "datasets": [
+      "electricity",
+      "traffic",
+      "nyc taxi",
+      "uber"
+    ],
+    "metrics": {
+      "electricity_P50QL": 0.101,
+      "traffic_P50QL": 0.19
+    },
+    "has_code": true,
+    "repo_url": "https://github.com/awslabs/gluon-ts"
+  },
+  {
+    "arxiv_id": "",
+    "title": "Intermittent demand forecasting with transformer neural networks",
+    "authors": "G. Zhang, Yusen Xia, Maohua Xie",
+    "year": 2023,
+    "category": "Transformer, Intermittent Demand",
+    "innovation": "使用Transformer神经网络进行间歇性需求预测。",
+    "datasets": [],
+    "metrics": {},
+    "has_code": false,
+    "repo_url": ""
+  }
+]

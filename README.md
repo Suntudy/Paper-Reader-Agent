@@ -42,6 +42,16 @@
 | `git_clone` | 克隆 Git 仓库 | 下载论文代码仓库到本地，配合 read_file 分析源码 |
 | `generate_diagram` | 生成 Mermaid 流程图 | 可视化模型架构、数据流程、论文方法 |
 
+**MCP 外部工具**（通过 MCP 协议接入，独立进程运行）：
+
+| 工具 | 功能 | 用途 |
+|------|------|------|
+| `mcp_semantic_scholar_search_papers` | Semantic Scholar 学术搜索 | 精准论文搜索，返回标题/引用数/摘要 |
+| `mcp_semantic_scholar_paper_details` | 论文详情 + 引用关系 | 查看引用数、被谁引用、引用了谁 |
+| `mcp_chroma_store_paper` | 存入向量数据库 | 将论文 embedding 存入 ChromaDB |
+| `mcp_chroma_search_similar_papers` | 语义相似搜索 | 用自然语言查找语义相关的论文 |
+| `mcp_chroma_list_stored_papers` | 列出向量库内容 | 查看已存储的所有论文 |
+
 ### 论文分析能力
 
 - 提取论文元信息（标题、作者、会议、年份）
@@ -277,13 +287,155 @@ graph TD
 
 给模型一个专门的 `generate_diagram` 工具，比靠 prompt 引导用 `write_file` 更可靠。模型看到有"画图"工具，就更倾向于在分析架构时主动画图——工具名本身就是对模型行为的暗示。
 
+### Skill 系统
+
+Skill 是比 Tool 更高层的能力——一份 Markdown 格式的"操作手册"，用户通过 `/skill-name` 命令触发，注入 conversation 后模型按手册自主编排多个 tool 调用。
+
+**Tool vs Skill 的区别**：
+
+| | Tool | Skill |
+|---|---|---|
+| 本质 | 单个 Python 函数 | Markdown 操作手册 |
+| 模型怎么看到 | tools 参数（JSON schema），每次 API 调用都传 | 触发后注入 conversation 的一条消息 |
+| 谁决定调用 | 模型自己决定 | 用户输入 `/skill-name` 显式触发 |
+| 复杂度 | 单步原子操作 | 多步工作流编排 |
+
+**使用方式**：
+
+```
+📝 You: skills                                    → 列出所有可用 skill
+📝 You: /research 搜索时间序列 Foundation Model      → 触发 research skill
+```
+
+**当前可用 skill**：
+
+| Skill | 命令 | 功能 |
+|-------|------|------|
+| `research` | `/research <任务>` | 学术论文搜索完全指南：搜索 → 下载 → 分析 → 存入知识库 → 输出结构化总结 |
+
+**research skill 的工作流程**：
+
+```
+/research 搜索 PatchTST 相关论文
+
+Agent 自动按以下流程执行：
+  1. query_paper_index  → 检查知识库是否已读过
+  2. web_search         → 搜索相关论文
+  3. fetch_arxiv        → 逐篇下载并阅读
+  4. save_paper_index   → 存入知识库
+  5. 输出结构化总结：论文列表、核心创新点、对比表、推荐
+```
+
+**实现原理**：
+
+Skill 的实现灵感来自 [Hermes Agent](https://github.com/anthropics/hermes-agent)。每个 skill 是一个目录，包含一个 `SKILL.md` 文件：
+
+```
+skills/
+  research/
+    SKILL.md          ← 学术搜索操作手册
+  compare/            ← 未来：论文对比 skill
+    SKILL.md
+```
+
+当用户输入 `/research 搜索 PatchTST` 时，agent 做三件事：
+1. 在 `skills/` 目录中找到 `research/SKILL.md`
+2. 将 SKILL.md 内容 + 用户指令合并为一条消息注入 conversation
+3. 模型读到这份"手册"，按指引自主编排 tool 调用
+
+添加新 skill 只需新建目录和 `SKILL.md` 文件，无需改代码——和 tools 的自动发现机制类似。
+
+### MCP 外部服务接入
+
+MCP（Model Context Protocol）是 Anthropic 提出的标准协议，让 Agent 以统一方式连接外部服务。和 Tool 的区别：Tool 是本地 Python 函数，MCP 是独立进程通过标准协议通信。
+
+**Tool vs Skill vs MCP**：
+
+| | Tool | Skill | MCP |
+|---|---|---|---|
+| 本质 | 单个 Python 函数 | Markdown 操作手册 | 独立 Server 进程 |
+| 通信方式 | 直接函数调用 | 注入 conversation | JSON-RPC over stdin/stdout |
+| 触发方式 | 模型自动调用 | 用户 `/command` | 模型自动调用 |
+| 复用性 | 仅限本 agent | 仅限本 agent | 所有 MCP 客户端通用 |
+
+**架构**：
+
+```
+agent.py（MCP Client）
+    │
+    │ stdin/stdout（JSON-RPC 2.0）
+    ├──────────────────────────────────┐
+    ▼                                  ▼
+semantic_scholar_server.py        chroma_server.py
+    │                                  │
+    ▼                                  ▼
+Semantic Scholar API              ChromaDB（本地向量数据库）
+```
+
+**当前 MCP Server**：
+
+#### 1. Semantic Scholar 学术搜索
+
+替代 `web_search` 搜索论文的场景，结果更精准。
+
+| 能力 | web_search（之前） | Semantic Scholar MCP |
+|---|---|---|
+| 搜索质量 | 混杂博客、新闻 | 只返回学术论文 |
+| 引用数 | 无 | 有 |
+| 引用关系 | 无 | 有（被谁引用、引用了谁） |
+| arXiv ID | 需从 URL 提取 | 直接返回 |
+
+```
+📝 You: 帮我搜索 time series foundation model 相关论文
+
+🤖 Agent:
+  🔧 [mcp_semantic_scholar_search_papers] query=time series foundation model
+  🔧 [mcp_semantic_scholar_paper_details] paper_id=arXiv:2310.06625
+  
+  找到 5 篇相关论文，引用最高的是 TimesFM (2024, 1200+ citations)...
+```
+
+#### 2. ChromaDB 向量数据库（RAG）
+
+用向量 embedding 实现语义搜索，替代 `query_paper_index` 的关键词匹配。
+
+| | papers.json（之前） | ChromaDB MCP |
+|---|---|---|
+| 搜索方式 | 关键词匹配 | 语义相似度 |
+| 搜索效果 | "注意力替代方案" 找不到 Mamba | 能找到语义相关的论文 |
+| 注入方式 | 全量注入 prompt | 只返回 top-K 相关论文 |
+| 论文规模 | <100 篇 | 1000+ 篇 |
+
+```
+📝 You: 有没有读过类似"不用注意力机制的序列建模"的论文？
+
+🤖 Agent:
+  🔧 [mcp_chroma_search_similar_papers] query=序列建模 不用注意力机制
+  
+  找到 3 篇语义相关的论文：
+  1. Mamba (2023) — 基于状态空间模型的序列建模 (相似度 0.82)
+  ...
+```
+
+**数据持久化**：ChromaDB 数据存在 `knowledge/chroma_db/`，embedding 模型使用 ChromaDB 内置的 all-MiniLM-L6-v2（首次使用自动下载 ~80MB）。
+
+**添加新 MCP Server**：在 `mcp_local/config.json` 中加一条配置即可，agent 启动时自动发现并连接。
+
 ## 项目结构
 
 ```
 Paper-reader-agent/
-├── agent.py              # Agent 主循环 + 流式输出 + 会话管理
+├── agent.py              # Agent 主循环 + 流式输出 + 会话管理 + skill + MCP
 ├── config.py             # API 配置
-├── tools/                # 11 个工具（自动发现，新建文件即注册）
+├── tools/                # 11 个本地工具（自动发现，新建文件即注册）
+├── skills/               # Skill 操作手册（自动发现，新建目录即注册）
+│   └── research/
+│       └── SKILL.md      # 学术论文搜索 skill
+├── mcp_local/            # MCP Server + Client
+│   ├── config.json       # MCP Server 启动配置
+│   ├── client.py         # MCP Client（sync-async 桥接层）
+│   ├── semantic_scholar_server.py  # Semantic Scholar MCP Server
+│   └── chroma_server.py  # ChromaDB 向量数据库 MCP Server
 ├── prompts/
 │   └── system.md         # System prompt（领域知识 + 行为规则）
 ├── knowledge/
@@ -292,6 +444,9 @@ Paper-reader-agent/
 │   ├── sessions/         # 会话历史存储
 │   ├── repos/            # git_clone 下载的代码仓库
 │   └── diagrams/         # generate_diagram 生成的流程图
+├── knowledge/
+│   ├── papers.json       # 论文知识库（结构化索引）
+│   └── chroma_db/        # ChromaDB 向量数据库（自动生成）
 ├── notes/                # 学习笔记
 ├── requirements.txt      # Python 依赖
 ├── TODO.md               # 待实现功能
@@ -303,5 +458,7 @@ Paper-reader-agent/
 1. **无框架** — 不依赖 LangChain/LangGraph，核心逻辑一目了然
 2. **OpenAI 兼容** — 可接任何 OpenAI-compatible API，随时换模型
 3. **Prompt 驱动** — 领域知识在 system prompt 里，修改 prompt 即可调整行为
-4. **工具可扩展** — 在 tools.py 中添加函数 + schema 即可注册新工具
-5. **跨会话记忆** — 论文知识库 + 会话持久化，越用越聪明
+4. **工具可扩展** — 在 tools/ 中添加 .py 文件即可注册新工具
+5. **Skill 可扩展** — 在 skills/ 中添加目录和 SKILL.md 即可注册新 skill
+6. **MCP 可扩展** — 在 mcp_local/config.json 中加一行配置即可接入新的外部服务
+7. **跨会话记忆** — 论文知识库（JSON + 向量数据库）+ 会话持久化，越用越聪明

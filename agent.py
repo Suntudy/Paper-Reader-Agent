@@ -12,6 +12,7 @@ from openai import OpenAI
 
 from config import API_KEY, BASE_URL, MODEL, MAX_ITERATIONS, TEMPERATURE
 from tools import TOOL_DEFINITIONS, execute_tool
+from mcp_local.client import init_mcp_servers, call_mcp_tool, get_mcp_tool_names, shutdown_mcp_servers
 
 # 白名单工具：模型调用这些工具时无需用户确认，直接执行；其他工具调用时会提示用户确认（因为可能有副作用）
 # Tools in this set run without asking; all others require confirmation.
@@ -28,6 +29,7 @@ AUTO_APPROVE_TOOLS = {
 # Directories
 SESSION_DIR = Path(__file__).parent / "output" / "sessions"
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
+SKILLS_DIR = Path(__file__).parent / "skills"
 
 
 def load_system_prompt() -> str:
@@ -207,6 +209,44 @@ def generate_session_id() -> str:
 
 
 # =============================================================================
+# Skill system
+# =============================================================================
+
+
+def list_skills() -> list[dict]:
+    """Scan skills/ directory for available skills."""
+    skills = []
+    if not SKILLS_DIR.exists():
+        return skills
+    for skill_md in sorted(SKILLS_DIR.rglob("SKILL.md")):
+        name = skill_md.parent.name
+        content = skill_md.read_text(encoding="utf-8")
+        description = ""
+        if content.startswith("---"):
+            end = content.find("---", 3)
+            if end != -1:
+                for line in content[3:end].split("\n"):
+                    if line.strip().startswith("description:"):
+                        description = line.split(":", 1)[1].strip().strip("\"'")
+                        break
+        skills.append({"name": name, "description": description})
+    return skills
+
+
+def load_skill(name: str) -> str | None:
+    """Load a skill's SKILL.md content by name. Returns None if not found."""
+    if not SKILLS_DIR.exists():
+        return None
+    direct = SKILLS_DIR / name / "SKILL.md"
+    if direct.exists():
+        return direct.read_text(encoding="utf-8")
+    for skill_md in SKILLS_DIR.rglob("SKILL.md"):
+        if skill_md.parent.name == name:
+            return skill_md.read_text(encoding="utf-8")
+    return None
+
+
+# =============================================================================
 # Agent core loop
 # =============================================================================
 
@@ -252,7 +292,7 @@ def run_agent(user_message: str, conversation: list | None = None) -> str:
 
                 # Auto-approve read-only tools; ask for others
                 if func_name not in AUTO_APPROVE_TOOLS:
-                    confirm = input("     执行? [Y/n/quit]: ").strip().lower()
+                    confirm = input("     执行? [Y/n/a(lwaysallow)/quit]: ").strip().lower()
                     if confirm in ("quit", "exit", "q"):
                         return "[用户中断]"
                     if confirm in ("n", "no"):
@@ -262,9 +302,15 @@ def run_agent(user_message: str, conversation: list | None = None) -> str:
                             "content": "Tool execution skipped by user.",
                         })
                         continue
+                    if confirm in ("a", "always", "alwaysallow"):
+                        AUTO_APPROVE_TOOLS.add(func_name)
+                        print(f"     ✅ '{func_name}' 已加入本次会话白名单")
 
-                # Execute the tool
-                result = execute_tool(func_name, func_args)
+                # Execute the tool (local or MCP)
+                if func_name in get_mcp_tool_names():
+                    result = call_mcp_tool(func_name, func_args)
+                else:
+                    result = execute_tool(func_name, func_args)
 
                 conversation.append({
                     "role": "tool",
@@ -312,6 +358,8 @@ def main():
     print("  'new'             — start a fresh conversation")
     print("  'sessions'        — list saved sessions")
     print("  'resume'          — resume a saved session")
+    print("  'skills'          — list available skills")
+    print("  '/<skill> <task>' — invoke a skill (e.g. /research find PatchTST)")
     print()
 
     # Check for existing sessions to resume
@@ -323,11 +371,23 @@ def main():
         print(f"  💾 Found {len(existing)} saved session(s). Type 'resume' to load one.")
         print()
 
+    # Initialize MCP servers
+    try:
+        mcp_tools = init_mcp_servers()
+        if mcp_tools:
+            TOOL_DEFINITIONS.extend(mcp_tools)
+            print(f"  🔌 MCP: {len(mcp_tools)} external tools loaded")
+            print()
+    except Exception as e:
+        print(f"  ⚠️  MCP init failed ({e}), continuing without MCP tools")
+        print()
+
     while True:
         try:
             user_input = input("\n📝 You: ").strip()
         except (EOFError, KeyboardInterrupt):
             save_session(conversation, session_id)
+            shutdown_mcp_servers()
             print(f"\n  💾 Session saved: {session_id}")
             print("Bye!")
             break
@@ -337,6 +397,7 @@ def main():
 
         if user_input.lower() in ("quit", "exit"):
             save_session(conversation, session_id)
+            shutdown_mcp_servers()
             print(f"  💾 Session saved: {session_id}")
             print("Bye!")
             break
@@ -383,6 +444,44 @@ def main():
                 print(f"  ✅ Resumed session {session_id} ({turn_count} turns)")
             else:
                 print("  ❌ Session not found")
+            continue
+
+        # Skill commands
+        if user_input.lower() in ("skills", "/skills"):
+            available = list_skills()
+            if not available:
+                print("  (No skills installed. Create skills/<name>/SKILL.md)")
+            else:
+                print("\n  Available skills:")
+                for s in available:
+                    print(f"    /{s['name']:<20} {s['description']}")
+                print(f"\n  Usage: /<skill-name> <your instruction>")
+            continue
+
+        if user_input.startswith("/"):
+            parts = user_input[1:].split(None, 1)
+            skill_name = parts[0]
+            instruction = parts[1] if len(parts) > 1 else ""
+
+            skill_content = load_skill(skill_name)
+            if skill_content is None:
+                print(f"  Unknown skill: {skill_name}")
+                print("  Type 'skills' to see available skills.")
+                continue
+
+            combined = f'[Skill "{skill_name}" activated — follow the workflow below.]\n\n'
+            combined += skill_content.strip()
+            if instruction:
+                combined += f"\n\n---\n\nUser instruction: {instruction}"
+            else:
+                combined += "\n\n---\n\nThe user activated this skill without a specific instruction. Ask what they'd like to research."
+
+            print(f"  📖 Skill '{skill_name}' loaded.")
+            print("\n🤖 Agent:")
+            response = run_agent(combined, conversation)
+            if not response:
+                print("(No response)")
+            save_session(conversation, session_id)
             continue
 
         # Run the agent

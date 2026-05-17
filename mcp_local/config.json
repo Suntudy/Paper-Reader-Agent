@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "semantic-scholar": {
+      "command": "python",
+      "args": ["mcp_local/semantic_scholar_server.py"]
+    },
+    "chroma": {
+      "command": "python",
+      "args": ["mcp_local/chroma_server.py"]
+    }
+  }
+}
